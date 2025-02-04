@@ -1,4 +1,4 @@
-// Copyright (C) 2019-2022 Algorand, Inc.
+// Copyright (C) 2019-2025 Algorand, Inc.
 // This file is part of go-algorand
 //
 // go-algorand is free software: you can redistribute it and/or modify
@@ -60,6 +60,8 @@ func init() {
 	netCmd.Flags().BoolVarP(&singleCatchpoint, "single", "s", true, "Download/process only from a single relay")
 	netCmd.Flags().BoolVarP(&loadOnly, "load", "l", false, "Load only, do not dump")
 	netCmd.Flags().VarP(excludedFields, "exclude-fields", "e", "List of fields to exclude from the dump: ["+excludedFields.AllowedString()+"]")
+	netCmd.Flags().StringVarP(&outFileName, "output", "o", "", "Specify an outfile for the dump ( i.e. tracker.dump.txt )")
+	netCmd.Flags().BoolVarP(&printDigests, "digest", "d", false, "Print balances and spver digests")
 }
 
 var netCmd = &cobra.Command{
@@ -78,7 +80,7 @@ var netCmd = &cobra.Command{
 		if relayAddress != "" {
 			addrs = []string{relayAddress}
 		} else {
-			addrs, err = tools.ReadFromSRV("algobootstrap", "tcp", networkName, "", false)
+			addrs, err = tools.ReadFromSRV(context.Background(), "algobootstrap", "tcp", networkName, "", false)
 			if err != nil || len(addrs) == 0 {
 				reportErrorf("Unable to bootstrap records for '%s' : %v", networkName, err)
 			}
@@ -103,7 +105,7 @@ var netCmd = &cobra.Command{
 				reportInfof("failed to load/dump from tar file for '%s' : %v", addr, err)
 				continue
 			}
-			// clear possible errors from previous run: at this point we've been succeed
+			// clear possible errors from previous run: at this point we've succeeded
 			err = nil
 			if singleCatchpoint {
 				// a catchpoint processes successfully, exit if needed
@@ -314,8 +316,8 @@ func loadAndDump(addr string, tarFile string, genesisInitState ledgercore.InitSt
 	}
 
 	defer func() {
-		if err := deleteLedgerFiles(!loadOnly); err != nil {
-			reportWarnf("Error deleting ledger files: %v", err)
+		if delErr := deleteLedgerFiles(!loadOnly); delErr != nil {
+			reportWarnf("Error deleting ledger files: %v", delErr)
 		}
 	}()
 	defer l.Close()
@@ -348,20 +350,36 @@ func loadAndDump(addr string, tarFile string, genesisInitState ledgercore.InitSt
 
 	if !loadOnly {
 		dirName := "./" + strings.Split(networkName, ".")[0] + "/" + strings.Split(addr, ".")[0]
-		outFile, err := os.OpenFile(dirName+"/"+strconv.FormatUint(uint64(round), 10)+".dump", os.O_RDWR|os.O_TRUNC|os.O_CREATE, 0755)
+		// If user provided -o <filename>, use that; otherwise use <dirName>/<round>.dump
+		dumpFilename := outFileName
+		if dumpFilename == "" {
+			dumpFilename = dirName + "/" + strconv.FormatUint(uint64(round), 10) + ".dump"
+		}
+		outFile, err := os.OpenFile(dumpFilename, os.O_RDWR|os.O_TRUNC|os.O_CREATE, 0755)
 		if err != nil {
 			return err
 		}
 		defer outFile.Close()
-		err = printAccountsDatabase("./ledger.tracker.sqlite", fileHeader, outFile, excludedFields.GetSlice())
+		err = printAccountsDatabase("./ledger.tracker.sqlite", true, fileHeader, outFile, excludedFields.GetSlice())
 		if err != nil {
 			return err
 		}
-		err = printKeyValueStore("./ledger.tracker.sqlite", outFile)
+		err = printKeyValueStore("./ledger.tracker.sqlite", true, outFile)
 		if err != nil {
 			return err
 		}
-
+		err = printStateProofVerificationContext("./ledger.tracker.sqlite", true, outFile)
+		if err != nil {
+			return err
+		}
+		err = printOnlineAccounts("./ledger.tracker.sqlite", true, outFile)
+		if err != nil {
+			return err
+		}
+		err = printOnlineRoundParams("./ledger.tracker.sqlite", true, outFile)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
